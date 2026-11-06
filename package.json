@@ -1,0 +1,23 @@
+{
+  "name": "dsh-fork-map",
+  "version": "0.2.0",
+  "description": "DSH Fork 库：每个工作区持有一个持久化的 Fork 库。把某一轮之前的完整上下文存成快照，随时从快照启动新会话；源会话删了 Fork 仍可用。",
+  "type": "module",
+  "main": "lib/index.js",
+  "license": "MIT",
+  "files": ["lib", "cordis.patch.yml", "README.md"],
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": { "platform": "web", "external": ["react"] }
+  },
+  "engines": { "node": ">=22" }
+}
