@@ -4,10 +4,11 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
-import { completedTurnCut, readSnapshot, summarizePrefix } from "../lib/store.js";
+import { completedTurnCut, contextOf, readSnapshot, summarizePrefix } from "../lib/store.js";
 import { ForkLibrary } from "../lib/library.js";
 
-const ev = (seq, type, data = {}) => ({ seq, type, time: 1000 + seq, data });
+const SURFACE = new Set(["system/message", "user/message", "assistant/message", "tool/result"]);
+const ev = (seq, type, data = {}) => ({ seq, type, time: 1000 + seq, data, ...(SURFACE.has(type) ? { surfaceOp: "append" } : {}) });
 
 /** 两轮对话 + 第三轮进行中 */
 function sampleEvents() {
@@ -140,6 +141,106 @@ test("open turn cannot be saved", async () => {
     const { services } = fakeServices(new Map([["s1", sampleEvents().slice(0, 4)]]));
     const lib = new ForkLibrary(services, fakeTable(), dir);
     await assert.rejects(lib.save({ sessionId: "s1" }), /尚未完成/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("auto naming fills label and note, keeps manual edits", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "fork-lib-"));
+  try {
+    const { services } = fakeServices(new Map([["s1", sampleEvents()]]));
+    const prompts = [];
+    services.llm = {
+      async *stream(o) {
+        prompts.push(o);
+        yield { type: "text-delta", text: '```json\n{"name":"示例问答","note":"已回答两问。"}\n```' };
+        yield { type: "finish", reason: { kind: "stop" } };
+      },
+    };
+    const lib = new ForkLibrary(services, fakeTable(), dir);
+    const { fork } = await lib.save({ sessionId: "s1" });
+    assert.equal(fork.naming, "pending");
+    await new Promise((r) => setTimeout(r, 20));
+    const named = lib.require(fork.id);
+    assert.equal(named.naming, "done");
+    assert.equal(named.label, "示例问答");
+    assert.equal(named.note, "已回答两问。");
+    // 完整上下文原样回放，末尾只多一条临时命名请求；快照本身不变
+    const msgs = prompts[0].messages;
+    assert.deepEqual(msgs.slice(0, -1).map((m) => m.content[0].text), ["第一问", "第一答", "第二问", "第二答"]);
+    assert.match(msgs.at(-1).content[0].text, /保存为一个 Fork/);
+    assert.doesNotMatch(msgs.at(-1).content[0].text, /父 Fork/);
+    assert.equal(prompts[0].provider, "p");
+    assert.equal((await readSnapshot(dir, fork.id)).events.length, 10, "snapshot untouched");
+
+    // 从这个 Fork 启动的会话再存 Fork：命名请求里带上父 Fork 的名字和备注
+    const { sessionId: childSession } = await lib.launch({ forkId: fork.id });
+    services.sessionQuery.observeSession = async (id) => ({
+      header: { id, cwd: "/tmp" },
+      events: sampleEvents(),
+      projections: { values: {} },
+      [Symbol.dispose]() {},
+    });
+    const child = await lib.save({ sessionId: childSession, messageId: "m2" });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(child.fork.parentForkId, fork.id);
+    assert.match(prompts.at(-1).messages.at(-1).content[0].text, /父 Fork：\n名称：示例问答\n备注：已回答两问。/);
+
+    await lib.update({ forkId: fork.id, label: "手动" });
+    await lib.autoName(fork.id, "s1", sampleEvents());
+    assert.equal(lib.require(fork.id).label, "手动", "auto naming never overwrites a manual label");
+
+    await lib.rename({ forkId: fork.id });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(lib.require(fork.id).label, "示例问答", "explicit AI rename overwrites");
+
+    services.llm = { async *stream() { yield { type: "text-delta", text: "抱歉" }; } };
+    const lib2 = new ForkLibrary(services, fakeTable(), dir);
+    const r2 = await lib2.save({ sessionId: "s1" });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(lib2.require(r2.fork.id).naming, "failed");
+    assert.equal(lib2.require(r2.fork.id).label, "");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("contextOf folds compaction replacements like the DSH surface", () => {
+  const events = [
+    { seq: 0, type: "system/message", surfaceOp: "append", data: { message: { role: "system", content: [{ type: "text", text: "sys" }] } } },
+    { seq: 1, type: "request/header", data: { header: { config: { provider: "x", model: "y" }, tools: [{ name: "t" }] } } },
+    { seq: 2, type: "user/message", surfaceOp: "append", data: { role: "user", content: [{ type: "text", text: "a" }] } },
+    { seq: 3, type: "assistant/message", surfaceOp: "append", data: { message: { role: "assistant", content: [{ type: "text", text: "b" }] } } },
+    { seq: 4, type: "assistant/message", surfaceOp: "append", data: { message: { role: "assistant", content: [] } } },
+    { seq: 5, type: "user/message", surfaceOp: { op: "replace", startSeq: 2, endSeq: 3 }, data: { role: "user", content: [{ type: "text", text: "summary" }] } },
+  ];
+  const c = contextOf(events);
+  assert.deepEqual(c.messages.map((m) => m.content[0]?.text), ["sys", "summary"]);
+  assert.deepEqual(c.route, { provider: "x", model: "y" });
+  assert.equal(c.tools.length, 1);
+});
+
+test("naming falls back to the default model when the recorded route fails", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "fork-lib-"));
+  try {
+    const events = sampleEvents();
+    events.splice(1, 0); // keep seqs
+    events[0] = { seq: 0, type: "request/header", time: 0, data: { header: { config: { provider: "old", model: "gone" } } } };
+    const { services } = fakeServices(new Map([["s1", events]]));
+    const tried = [];
+    services.llm = {
+      async *stream(o) {
+        tried.push(o.provider);
+        if (o.provider === "old") throw new Error("unknown provider");
+        yield { type: "text-delta", text: '{"name":"回退成功","note":""}' };
+      },
+    };
+    const lib = new ForkLibrary(services, fakeTable(), dir);
+    const { fork } = await lib.save({ sessionId: "s1" });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(tried, ["old", "p"]);
+    assert.equal(lib.require(fork.id).label, "回退成功");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
