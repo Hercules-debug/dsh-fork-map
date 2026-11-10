@@ -77,6 +77,8 @@ my-project   ~/code/my-project · 3 个 Fork
       │ 方案 C：先改数据库          15 轮 · 今天   │
       └──────────────────────────────────────────┘
 ```
+<img width="1144" height="683" alt="image" src="https://github.com/user-attachments/assets/2257f78b-b1cd-44d7-af2a-55ce17ce3ff7" />
+
 
 - 每张卡片显示名称、轮数、最后一问、最后一答、备注和来源会话。
 - 来源会话可以点，点了直接跳过去；已删除的会划线标出。
