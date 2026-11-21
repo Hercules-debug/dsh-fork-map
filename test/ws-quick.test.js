@@ -19,13 +19,23 @@ function mkRegistry(initial = []) {
 }
 
 /** 用假的宿主服务 apply 子插件，收集命令和路由。 */
+/** 最小的 node http response 假对象。 */
+function mkResponse() {
+  return {
+    status: 0,
+    body: "",
+    writeHead(code) { this.status = code; },
+    end(chunk) { this.body = chunk; },
+  };
+}
+
 function mkApply({ registry = mkRegistry([]), config = { enabled: true } } = {}) {
   const commands = [];
   const routes = [];
   const ctx = {
     workspaceRegistry: registry,
     commands: { register: (d) => commands.push(d) },
-    connection: { fetch: { register: (r) => routes.push(r) } },
+    webServer: { register: (r) => routes.push(r) },
   };
   mod.wsQuick.apply(ctx, config);
   return { commands, routes };
@@ -84,12 +94,20 @@ test("目录名碰撞时递增", () => {
   assert.equal(mod.nextDirName(base, "u", new Date(2026, 9, 29)), "u-1029-3");
 });
 
-test("注册 /ws 命令和 /api/wsQuick.new 路由", () => {
+test("注册 /ws 命令和 /ws-quick/new 路由", () => {
   const { commands, routes } = mkApply();
   assert.deepEqual(commands.map((c) => c.name), ["ws"]);
   assert.equal(routes.length, 1);
-  assert.equal(routes[0].path, "/api/wsQuick.new");
-  assert.deepEqual(routes[0].methods, ["POST"]);
+  assert.equal(routes[0].path, "/ws-quick/new");
+  assert.equal(routes[0].kind, "exact");
+});
+
+test("路由拒绝非 POST", async () => {
+  const { routes } = mkApply();
+  const res = mkResponse();
+  await routes[0].handler({ method: "GET" }, res);
+  assert.equal(res.status, 405);
+  assert.equal(JSON.parse(res.body).ok, false);
 });
 
 test("enabled=false 时什么都不注册", () => {
@@ -108,8 +126,9 @@ test("命令失败时返回 error 而不是抛异常", async () => {
 
 test("路由成功时返回 workspaceId 与路径", async () => {
   const { routes } = mkApply({ registry: mkRegistry([{ id: "a", path: mkBase(), title: "父" }]) });
-  const res = await routes[0].fetch(new Request("http://x/api/wsQuick.new", { method: "POST" }));
-  const data = await res.json();
+  const res = mkResponse();
+  await routes[0].handler({ method: "POST" }, res);
+  const data = JSON.parse(res.body);
   assert.equal(res.status, 200);
   assert.equal(data.ok, true);
   assert.ok(data.path);
@@ -120,9 +139,10 @@ test("路由创建失败时返回 500 与错误文本", async () => {
   const { routes } = mkApply({
     registry: { list: () => [], create: async () => { throw new Error("disk full"); } },
   });
-  const res = await routes[0].fetch(new Request("http://x/api/wsQuick.new", { method: "POST" }));
+  const res = mkResponse();
+  await routes[0].handler({ method: "POST" }, res);
   assert.equal(res.status, 500);
-  assert.match((await res.json()).error, /disk full/u);
+  assert.match(JSON.parse(res.body).error, /disk full/u);
 });
 
 test("fork-map 入口把 ws-quick 作为子插件挂上，并透传 wsQuick 配置", () => {
@@ -141,7 +161,7 @@ test("fork-map 入口把 ws-quick 作为子插件挂上，并透传 wsQuick 配�
 test("client 产物把按钮挂到 sidebar.footer.action，且只依赖 react", () => {
   const artifact = readFileSync(new URL("../lib/client.js", import.meta.url), "utf8");
   assert.match(artifact, /name: "sidebar\.footer\.action", id: "ws-quick", locale: WSQ_NS/u);
-  assert.match(artifact, /\/api\/wsQuick\.new/u);
+  assert.match(artifact, /fetch\("\/ws-quick\/new"/u);
   const deps = [...artifact.matchAll(/\brequire\("([^"]+)"\)/gu)].map((m) => m[1]);
   assert.deepEqual([...new Set(deps)], ["react"]);
 });

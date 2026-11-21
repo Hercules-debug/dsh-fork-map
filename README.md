@@ -185,7 +185,6 @@ dsh plugin --profile web add /path/to/dsh-fork-map
 | POST | `/api/forkLibrary.update`     | `{ forkId, label?, note? }`              |
 | POST | `/api/forkLibrary.delete`     | `{ forkId }`                             |
 | POST | `/api/forkLibrary.autoname`   | `{ forkId }`，让 Fork 重新给自己起名     |
-| POST | `/api/wsQuick.new`            | 无，返回 `{ ok, workspaceId, path, title }` |
 
 ## 项目结构
 
@@ -194,7 +193,7 @@ lib/
   index.js     宿主插件入口：打开存储、注册 /api/forkLibrary.* 路由
   library.js   保存 / 启动 / 改名 / 自动起名 / 删除
   store.js     切点计算、上下文还原、摘要提取、快照读写（不依赖 DSH，可单测）
-  ws-quick.js  工作区快速新建：/ws 命令和 /api/wsQuick.new（作为子插件挂载）
+  ws-quick.js  工作区快速新建：/ws 命令和 POST /ws-quick/new（作为子插件挂载）
   client.js    Web 端：「存为 Fork」按钮、「Fork 库」标签页、侧栏「新建工作区」按钮
 test/
   library.test.js
