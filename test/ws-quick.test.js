@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { Readable } from "node:stream";
 import * as mod from "../lib/ws-quick.js";
 import * as entry from "../lib/index.js";
 
@@ -11,7 +12,7 @@ function mkRegistry(initial = []) {
   return {
     list: () => state,
     create: async (path, title) => {
-      const w = { id: `ws-${state.length}`, path, title };
+      const w = { id: `ws-${state.length}`, path, title, sessionIds: [] };
       state.unshift(w);
       return w;
     },
@@ -42,43 +43,97 @@ function mkApply({ registry = mkRegistry([]), config = { enabled: true } } = {})
 }
 
 const mkBase = () => mkdtempSync(join(tmpdir(), "wsq-"));
+/** 在一个临时根目录下建一个「当前工作区」目录。 */
+function mkWorkspaceDir(name = "proj") {
+  const root = mkBase();
+  const path = join(root, name);
+  mkdirSync(path);
+  return { root, path };
+}
+/** 带 JSON body 的假 POST 请求（可 for-await 读取）。 */
+function mkPost(payload) {
+  const req = Readable.from(payload === undefined ? [] : [JSON.stringify(payload)]);
+  req.method = "POST";
+  return req;
+}
 
-test("无参数时在父工作区下建 u-MMDD-N 子目录", async () => {
-  const base = mkBase();
-  const r = await mod.quickCreate(mkRegistry([{ id: "a", path: base, title: "父" }]), "");
+test("无参数时建在当前工作区旁边（同一个上级目录）", async () => {
+  const { root, path } = mkWorkspaceDir();
+  const r = await mod.quickCreate(mkRegistry([{ id: "a", path, title: "proj" }]), "");
   assert.equal(r.created, true);
   assert.ok(existsSync(r.path));
-  assert.ok(r.path.startsWith(base));
+  assert.equal(dirname(r.path), root);
   assert.match(r.title, /^u-\d{4}-\d+$/u);
 });
 
-test("重复点击递增序号，不覆盖已有目录", async () => {
-  const base = mkBase();
-  const reg = mkRegistry([{ id: "a", path: base, title: "父" }]);
-  const first = await mod.quickCreate(reg, "");
-  // 第一次创建的工作区排到列表头，第二次会建在它下面
-  const second = await mod.quickCreate(reg, "");
+test("连续点击不会往下嵌套，都和当前工作区并列", async () => {
+  const { root, path } = mkWorkspaceDir();
+  const reg = mkRegistry([{ id: "a", path, title: "proj" }]);
+  const first = await mod.quickCreate(reg, "", "u", { workspaceId: "a" });
+  const second = await mod.quickCreate(reg, "", "u", { workspaceId: "a" });
   assert.notEqual(first.path, second.path);
-  assert.ok(existsSync(first.path) && existsSync(second.path));
+  assert.equal(dirname(first.path), root);
+  assert.equal(dirname(second.path), root);
 });
 
-test("相对名作为子目录名", async () => {
-  const base = mkBase();
-  const r = await mod.quickCreate(mkRegistry([{ id: "a", path: base, title: "父" }]), "my-task");
+test("没有提示时，以最新的工作区为当前，仍是并列而不是嵌套", async () => {
+  const { root, path } = mkWorkspaceDir();
+  const reg = mkRegistry([{ id: "a", path, title: "proj" }]);
+  const first = await mod.quickCreate(reg, "");
+  const second = await mod.quickCreate(reg, "");
+  assert.equal(dirname(first.path), root);
+  assert.equal(dirname(second.path), root, "第二次以第一次新建的为当前，它们同级");
+});
+
+test("按 workspaceId 选当前工作区，而不是列表里最新的", async () => {
+  const a = mkWorkspaceDir("a");
+  const b = mkWorkspaceDir("b");
+  const reg = mkRegistry([
+    { id: "new", path: a.path, title: "a" },
+    { id: "old", path: b.path, title: "b" },
+  ]);
+  const r = await mod.quickCreate(reg, "", "u", { workspaceId: "old" });
+  assert.equal(dirname(r.path), b.root);
+});
+
+test("按 sessionId 找到所属工作区", async () => {
+  const a = mkWorkspaceDir("a");
+  const b = mkWorkspaceDir("b");
+  const reg = mkRegistry([
+    { id: "new", path: a.path, title: "a", sessionIds: [] },
+    { id: "old", path: b.path, title: "b", sessionIds: ["s1"] },
+  ]);
+  const r = await mod.quickCreate(reg, "", "u", { sessionId: "s1" });
+  assert.equal(dirname(r.path), b.root);
+});
+
+test("当前工作区目录已不存在时跳过它", async () => {
+  const a = mkWorkspaceDir("a");
+  const reg = mkRegistry([
+    { id: "gone", path: join(a.root, "deleted"), title: "gone" },
+    { id: "a", path: a.path, title: "a" },
+  ]);
+  const r = await mod.quickCreate(reg, "", "u", { workspaceId: "gone" });
+  assert.equal(dirname(r.path), a.root);
+});
+
+test("相对名建在当前工作区旁边", async () => {
+  const { root, path } = mkWorkspaceDir();
+  const r = await mod.quickCreate(mkRegistry([{ id: "a", path, title: "proj" }]), "my-task");
   assert.equal(r.title, "my-task");
-  assert.equal(r.path, join(base, "my-task"));
+  assert.equal(r.path, join(root, "my-task"));
 });
 
-test("--same 复用父目录", async () => {
-  const base = mkBase();
-  const r = await mod.quickCreate(mkRegistry([{ id: "a", path: base, title: "父" }]), "--same");
+test("--same 复用当前工作区本身", async () => {
+  const { path } = mkWorkspaceDir();
+  const r = await mod.quickCreate(mkRegistry([{ id: "a", path, title: "proj" }]), "--same");
   assert.equal(r.reused, true);
-  assert.equal(r.path, base);
+  assert.equal(r.path, path);
 });
 
 test("绝对路径直接采用，已存在不算新建", async () => {
   const other = mkBase();
-  const r = await mod.quickCreate(mkRegistry([{ id: "a", path: mkBase(), title: "父" }]), other);
+  const r = await mod.quickCreate(mkRegistry([{ id: "a", path: mkWorkspaceDir().path, title: "p" }]), other);
   assert.equal(r.path, other);
   assert.equal(r.created, false);
 });
@@ -124,15 +179,47 @@ test("命令失败时返回 error 而不是抛异常", async () => {
   assert.match(out.text, /boom/u);
 });
 
-test("路由成功时返回 workspaceId 与路径", async () => {
-  const { routes } = mkApply({ registry: mkRegistry([{ id: "a", path: mkBase(), title: "父" }]) });
+test("路由按 body 里的 workspaceId 建在该工作区旁边", async () => {
+  const a = mkWorkspaceDir("a");
+  const b = mkWorkspaceDir("b");
+  const { routes } = mkApply({
+    registry: mkRegistry([
+      { id: "new", path: a.path, title: "a" },
+      { id: "old", path: b.path, title: "b" },
+    ]),
+  });
   const res = mkResponse();
-  await routes[0].handler({ method: "POST" }, res);
+  await routes[0].handler(mkPost({ workspaceId: "old" }), res);
   const data = JSON.parse(res.body);
   assert.equal(res.status, 200);
   assert.equal(data.ok, true);
-  assert.ok(data.path);
+  assert.equal(dirname(data.path), b.root);
   assert.ok("workspaceId" in data);
+});
+
+test("路由 body 不是 JSON 时退回最新工作区", async () => {
+  const a = mkWorkspaceDir("a");
+  const { routes } = mkApply({ registry: mkRegistry([{ id: "a", path: a.path, title: "a" }]) });
+  const req = Readable.from(["not json"]);
+  req.method = "POST";
+  const res = mkResponse();
+  await routes[0].handler(req, res);
+  assert.equal(res.status, 200);
+  assert.equal(dirname(JSON.parse(res.body).path), a.root);
+});
+
+test("/ws 命令以发出命令的会话所在工作区为当前", async () => {
+  const a = mkWorkspaceDir("a");
+  const b = mkWorkspaceDir("b");
+  const { commands } = mkApply({
+    registry: mkRegistry([
+      { id: "new", path: a.path, title: "a", sessionIds: [] },
+      { id: "old", path: b.path, title: "b", sessionIds: ["s1"] },
+    ]),
+  });
+  const out = await commands[0].handler({ rawInput: "", agent: { session: { id: "s1" } } });
+  assert.equal(out.kind, "success");
+  assert.ok(out.text.includes(b.root), out.text);
 });
 
 test("路由创建失败时返回 500 与错误文本", async () => {
@@ -140,7 +227,7 @@ test("路由创建失败时返回 500 与错误文本", async () => {
     registry: { list: () => [{ id: "a", path: mkBase() }], create: async () => { throw new Error("disk full"); } },
   });
   const res = mkResponse();
-  await routes[0].handler({ method: "POST" }, res);
+  await routes[0].handler(mkPost({}), res);
   assert.equal(res.status, 500);
   assert.match(JSON.parse(res.body).error, /disk full/u);
 });
@@ -162,6 +249,7 @@ test("client 产物把按钮挂到 sidebar.footer.action，且只依赖 react", 
   const artifact = readFileSync(new URL("../lib/client.js", import.meta.url), "utf8");
   assert.match(artifact, /name: "sidebar\.footer\.action", id: "ws-quick", locale: WSQ_NS/u);
   assert.match(artifact, /fetch\("\/ws-quick\/new"/u);
+  assert.match(artifact, /body: JSON\.stringify\(currentWorkspaceHint\(ctx\)\)/u);
   const deps = [...artifact.matchAll(/\brequire\("([^"]+)"\)/gu)].map((m) => m[1]);
   assert.deepEqual([...new Set(deps)], ["react"]);
 });
