@@ -102,6 +102,35 @@ my-project   ~/code/my-project · 3 个 Fork
 
 双击名称可以手动改名。
 
+### 附带：一键新建工作区
+
+原来的 `dsh-ws-quick` 已经并进来，装这一个插件就有。官方「添加工作区」要走目录选择器逐层点；这里点一下侧栏底部的「＋ 新建工作区」就行：
+
+```
+点击 → 取最近的工作区当父目录 → 建子目录 u-MMDD-N → 注册为工作区 → 切过去
+```
+
+父目录是工作区列表里排最前、目录仍存在的那个（新建的总排最前，所以就是「刚才那个」）；一个工作区都没有时用 `dsh web` 进程的启动目录。目录名刻意无含义，标题之后随时可改。
+
+也可以用命令：
+
+| 命令                 | 效果                               |
+| -------------------- | ---------------------------------- |
+| `/ws`                | 在最近工作区下建 `u-MMDD-N`        |
+| `/ws my-task`        | 在最近工作区下建 `my-task`         |
+| `/ws ~/projects/foo` | 用这个路径（不存在就创建）         |
+| `/ws --same`         | 不新建，直接切回父工作区本身       |
+
+配置（写在 profile 的 `cordis.patch.yml`）：
+
+```yaml
+- id: fork-map
+  config:
+    wsQuick:
+      enabled: true    # false 关掉按钮和 /ws
+      dirPrefix: 'u'   # 目录名前缀
+```
+
 ## 安装
 
 需要 DSH Web（`@deepseek-ai/dsh`）和 Node.js 22 或更高版本。
@@ -124,6 +153,8 @@ dsh plugin --profile web add /path/to/dsh-fork-map
 4. 重启 `dsh web`。
 
 </details>
+
+**从 dsh-ws-quick 迁移**：先在 profile 里移除 `dsh-ws-quick`（`dependencies`、`dsh.profile.bundles`、`cordis.patch.yml` 里 `id: dsh-ws-quick` 的配置），否则会出现两个 `/ws` 命令和两个按钮。原来的 `dirPrefix` 配置移到 `fork-map` 的 `config.wsQuick` 下。
 
 ## 工作原理
 
@@ -154,6 +185,7 @@ dsh plugin --profile web add /path/to/dsh-fork-map
 | POST | `/api/forkLibrary.update`     | `{ forkId, label?, note? }`              |
 | POST | `/api/forkLibrary.delete`     | `{ forkId }`                             |
 | POST | `/api/forkLibrary.autoname`   | `{ forkId }`，让 Fork 重新给自己起名     |
+| POST | `/api/wsQuick.new`            | 无，返回 `{ ok, workspaceId, path, title }` |
 
 ## 项目结构
 
@@ -162,9 +194,11 @@ lib/
   index.js     宿主插件入口：打开存储、注册 /api/forkLibrary.* 路由
   library.js   保存 / 启动 / 改名 / 自动起名 / 删除
   store.js     切点计算、上下文还原、摘要提取、快照读写（不依赖 DSH，可单测）
-  client.js    Web 端：「存为 Fork」按钮和「Fork 库」标签页
+  ws-quick.js  工作区快速新建：/ws 命令和 /api/wsQuick.new（作为子插件挂载）
+  client.js    Web 端：「存为 Fork」按钮、「Fork 库」标签页、侧栏「新建工作区」按钮
 test/
   library.test.js
+  ws-quick.test.js
 cordis.patch.yml   把插件挂进 profile
 ```
 
@@ -181,7 +215,7 @@ npm test    # node --test test/*.test.js
 - 只能在已经结束的轮次上存 Fork。
 - 子代理（subagent）会话不能存 Fork。
 - 新会话的工作目录固定为保存时的路径。如果这个目录被删或被移动，从 Fork 启动的会话可能无法正常工作，也不会归入任何工作区。
-- 改了插件的宿主部分（`lib/index.js`、`lib/library.js`、`lib/store.js`），要重启 `dsh web` 才生效。
+- 改了插件的宿主部分（`lib/index.js`、`lib/library.js`、`lib/store.js`、`lib/ws-quick.js`），要重启 `dsh web` 才生效。
 
 ## License
 

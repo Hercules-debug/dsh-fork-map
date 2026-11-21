@@ -1,4 +1,12 @@
 # dsh bundle patch: inserts this plugin into a profile's layer stack.
+#
+# 工作区快速新建默认开启。要改前缀或关掉，在 profile 的 cordis.patch.yml 里覆盖：
+#
+#   - id: fork-map
+#     config:
+#       wsQuick:
+#         enabled: true
+#         dirPrefix: 'u'
 - insert:
     - id: fork-map
       name: 'dsh-fork-map'

@@ -1,7 +1,7 @@
 {
   "name": "dsh-fork-map",
-  "version": "0.2.0",
-  "description": "DSH Fork 库：每个工作区持有一个持久化的 Fork 库。把某一轮之前的完整上下文存成快照，随时从快照启动新会话；源会话删了 Fork 仍可用。",
+  "version": "0.3.0",
+  "description": "DSH Fork 库：每个工作区持有一个持久化的 Fork 库。把某一轮之前的完整上下文存成快照，随时从快照启动新会话；源会话删了 Fork 仍可用。附带一键新建工作区（/ws 命令 + 侧栏按钮）。",
   "type": "module",
   "main": "lib/index.js",
   "license": "MIT",
@@ -21,7 +21,8 @@
     "fork",
     "session",
     "snapshot",
-    "context"
+    "context",
+    "workspace"
   ],
   "files": [
     "lib",
