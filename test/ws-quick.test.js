@@ -117,7 +117,7 @@ test("enabled=false 时什么都不注册", () => {
 
 test("命令失败时返回 error 而不是抛异常", async () => {
   const { commands } = mkApply({
-    registry: { list: () => [], create: async () => { throw new Error("boom"); } },
+    registry: { list: () => [{ id: "a", path: mkBase() }], create: async () => { throw new Error("boom"); } },
   });
   const out = await commands[0].handler({ rawInput: "x" });
   assert.equal(out.kind, "error");
@@ -137,7 +137,7 @@ test("路由成功时返回 workspaceId 与路径", async () => {
 
 test("路由创建失败时返回 500 与错误文本", async () => {
   const { routes } = mkApply({
-    registry: { list: () => [], create: async () => { throw new Error("disk full"); } },
+    registry: { list: () => [{ id: "a", path: mkBase() }], create: async () => { throw new Error("disk full"); } },
   });
   const res = mkResponse();
   await routes[0].handler({ method: "POST" }, res);
